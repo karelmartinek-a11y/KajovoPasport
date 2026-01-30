@@ -39,6 +39,10 @@ FIELDS: List[Tuple[str, str]] = [
     ("dvere_koupelna", "dveře koupelna"),
 ]
 
+APP_BG = "#f4f6fb"
+PREVIEW_BG = "#f9fbff"
+ACCENT_COLOR = "#0f62fe"
+
 
 def human_exception(e: Exception) -> str:
     return f"{type(e).__name__}: {e}"
@@ -113,12 +117,33 @@ class App:
     def __init__(self, root: tk.Tk):
         self.root = root
         self.root.title(APP_TITLE)
+        self.root.configure(bg=APP_BG)
 
         # Maximalizovat na hlavním monitoru (Windows)
         try:
             self.root.state("zoomed")
         except Exception:
             pass
+
+        self.style = ttk.Style(self.root)
+        try:
+            self.style.theme_use("clam")
+        except Exception:
+            pass
+        self.style.configure("Header.TFrame", background=APP_BG)
+        self.style.configure("Status.TLabel", background=APP_BG, foreground="#333333")
+        self.style.configure(
+            "Accent.TButton",
+            foreground="white",
+            background=ACCENT_COLOR,
+            font=("Segoe UI", 9, "bold"),
+            padding=6,
+        )
+        self.style.map(
+            "Accent.TButton",
+            background=[("active", "#0a54c9"), ("pressed", "#084298")],
+            relief=[("pressed", "sunken"), ("!pressed", "raised")],
+        )
 
         self.settings = load_settings()
         self.db = Database(self.settings.db_path)
@@ -140,15 +165,23 @@ class App:
 
     def _build_ui(self) -> None:
         self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(1, weight=1)
+        self.root.rowconfigure(2, weight=1)
 
-        header = ttk.Frame(self.root, padding=(10, 8))
+        header = ttk.Frame(self.root, padding=(12, 10, 12, 6), style="Header.TFrame")
         header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=0)
         header.columnconfigure(1, weight=1)
         header.columnconfigure(2, weight=0)
 
-        ttk.Label(header, text=APP_TITLE, font=("Segoe UI", 14, "bold")).grid(row=0, column=0, sticky="w", padx=(0, 12))
+        ttk.Label(header, text=APP_TITLE, font=("Segoe UI SemiBold", 18), foreground="#111").grid(
+            row=0, column=0, sticky="w", padx=(0, 12)
+        )
+        ttk.Label(
+            header,
+            text="Profesionální tiskový pasport pro Kajovo",
+            font=("Segoe UI", 10),
+            foreground="#555",
+        ).grid(row=1, column=0, sticky="w", padx=(0, 12))
 
         left_btns = ttk.Frame(header)
         left_btns.grid(row=0, column=1, sticky="w")
@@ -157,10 +190,11 @@ class App:
         ttk.Button(left_btns, text="Save", command=self.on_save_db_as).grid(row=0, column=2, padx=3)
 
         ttk.Button(header, text="Exit", command=self.on_exit).grid(row=0, column=2, sticky="e")
+        ttk.Separator(self.root, orient="horizontal").grid(row=1, column=0, sticky="ew")
 
         # Main split
         main = ttk.Frame(self.root, padding=(10, 8))
-        main.grid(row=1, column=0, sticky="nsew")
+        main.grid(row=2, column=0, sticky="nsew")
         main.columnconfigure(0, weight=0)
         main.columnconfigure(1, weight=1)
         main.rowconfigure(0, weight=1)
@@ -170,9 +204,9 @@ class App:
         left.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
         left.rowconfigure(1, weight=1)
 
-        ttk.Label(left, text="Pasportní karty").grid(row=0, column=0, sticky="w")
+        ttk.Label(left, text="Pasportní karty", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
 
-        self.listbox = tk.Listbox(left, height=20, exportselection=False)
+        self.listbox = tk.Listbox(left, height=20, exportselection=False, font=("Segoe UI", 10), bg="white", bd=0, highlightthickness=0)
         self.listbox.grid(row=1, column=0, sticky="nsw")
         self.listbox.config(width=28)
 
@@ -192,7 +226,7 @@ class App:
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
 
-        self.preview_canvas = tk.Canvas(right, bg="#ececec", highlightthickness=0)
+        self.preview_canvas = tk.Canvas(right, bg=PREVIEW_BG, highlightthickness=0)
         self.preview_canvas.grid(row=0, column=0, sticky="nsew")
 
         action_bar = ttk.Frame(right, padding=(0, 8, 0, 0))
@@ -201,13 +235,17 @@ class App:
 
         ttk.Button(action_bar, text="Upravit", command=self.on_rename_card).grid(row=0, column=0, padx=4, sticky="w")
         ttk.Button(action_bar, text="Uložit", command=self.on_commit).grid(row=0, column=1, padx=4, sticky="w")
-        ttk.Button(action_bar, text="PDF", command=self.on_pdf).grid(row=0, column=2, padx=4, sticky="w")
-        ttk.Button(action_bar, text="Tisknout", command=self.on_print).grid(row=0, column=3, padx=4, sticky="w")
+        ttk.Button(action_bar, text="PDF", command=self.on_pdf, style="Accent.TButton").grid(
+            row=0, column=2, padx=4, sticky="w"
+        )
+        ttk.Button(action_bar, text="Tisknout", command=self.on_print, style="Accent.TButton").grid(
+            row=0, column=3, padx=4, sticky="w"
+        )
 
         # Status bar
         self.status = tk.StringVar(value="")
-        status_lbl = ttk.Label(self.root, textvariable=self.status, padding=(10, 4))
-        status_lbl.grid(row=2, column=0, sticky="ew")
+        status_lbl = ttk.Label(self.root, textvariable=self.status, padding=(10, 6), style="Status.TLabel")
+        status_lbl.grid(row=3, column=0, sticky="ew")
 
         # Context menu for clearing image
         self.cell_menu = tk.Menu(self.root, tearoff=0)

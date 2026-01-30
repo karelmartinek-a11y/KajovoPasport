@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import os
 import tempfile
 import webbrowser
@@ -8,8 +9,28 @@ from typing import Dict, List, Tuple, Optional
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
+
+
+def _ensure_pdf_font() -> str:
+    """Register a TrueType font that covers Czech glyphs; fallback to Helvetica."""
+    font_name = "KajovoSans"
+    candidates = [
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/arialuni.ttf"),
+        Path("C:/Windows/Fonts/DejaVuSans.ttf"),
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            try:
+                pdfmetrics.registerFont(TTFont(font_name, str(candidate)))
+                return font_name
+            except Exception:
+                break
+    return "Helvetica"
 
 
 def generate_card_pdf(
@@ -33,7 +54,8 @@ def generate_card_pdf(
     # Title area
     title_font = 16
     title_h = 18 * mm
-    c.setFont("Helvetica-Bold", title_font)
+    font_name = _ensure_pdf_font()
+    c.setFont(font_name, title_font)
     c.drawString(margin, page_h - margin - title_font * 1.2, card_name)
 
     # Grid below title
@@ -66,7 +88,7 @@ def generate_card_pdf(
         c.rect(x, y, cell_w, cell_h, stroke=1, fill=0)
 
         # Label
-        c.setFont("Helvetica", label_font)
+        c.setFont(font_name, label_font)
         c.drawString(x + img_pad, y + img_pad, label)
 
         # Image area (above label)
@@ -83,7 +105,7 @@ def generate_card_pdf(
         png = images_png.get(field_key)
         if png:
             try:
-                ir = ImageReader(png)
+                ir = ImageReader(io.BytesIO(png))
                 iw, ih = ir.getSize()
                 # Fit image into img_w/img_h, preserve aspect
                 scale = min(img_w / iw, img_h / ih)
