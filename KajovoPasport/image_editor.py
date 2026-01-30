@@ -4,7 +4,7 @@ import io
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
-from PIL import Image
+from PIL import Image, ImageOps
 from PIL.ImageQt import ImageQt
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QPainter, QPen, QPixmap
@@ -85,7 +85,8 @@ class ImageEditor(QDialog):
         self.setWindowTitle(title)
         self.setModal(True)
 
-        self.original = pil_image.convert("RGBA")
+        oriented = ImageOps.exif_transpose(pil_image)
+        self.original = oriented.convert("RGBA")
         self.out_w, self.out_h = output_size
         self.state = TransformState()
 
