@@ -47,6 +47,7 @@ class ImageEditor(tk.Toplevel):
         self._drag_start = None  # (x, y, ox, oy)
         self._pending_render = None
         self._preview_photo = None
+        self.zoom_var = tk.DoubleVar(value=1.0)
 
         self._build_ui()
         self._bind_events()
