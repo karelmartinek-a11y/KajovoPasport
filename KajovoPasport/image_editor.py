@@ -108,8 +108,8 @@ class ImageEditor(QDialog):
         self.canvas = ImageCanvas(self)
 
         controls_layout = QHBoxLayout()
-        self._add_control_button("⟲ -90°", lambda: self._rotate(-90), controls_layout)
-        self._add_control_button("⟳ +90°", lambda: self._rotate(90), controls_layout)
+        self._add_control_button("Otočit vlevo 90°", lambda: self._rotate(-90), controls_layout)
+        self._add_control_button("Otočit vpravo 90°", lambda: self._rotate(90), controls_layout)
         self._add_control_button("↺ -5°", lambda: self._rotate(-5), controls_layout)
         self._add_control_button("↻ +5°", lambda: self._rotate(5), controls_layout)
         self._add_control_button("Reset", self._reset, controls_layout)
