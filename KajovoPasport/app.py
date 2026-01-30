@@ -67,7 +67,7 @@ FIELDS: List[Tuple[str, str]] = [
     ("wc", "WC"),
     ("umyvadlo", "UMYVADLO"),
     ("sprcha", "SPRCHA"),
-    ("koupelna_svetla", "OSVĚTLENÍ KOUPELNY"),
+    ("koupelna_svetla", "SVĚTLA WC"),
     ("dvere_vchod", "DVEŘE 1"),
     ("dvere_koupelna", "DVEŘE 2"),
 ]
@@ -229,7 +229,7 @@ class PreviewWidget(QWidget):
 class SettingsDialog(QDialog):
     def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
         super().__init__(parent)
-        self.setWindowTitle("NastavenÃ­")
+        self.setWindowTitle("Nastavení")
         self.setMinimumSize(480, 200)
         self.settings = settings
 
@@ -237,9 +237,9 @@ class SettingsDialog(QDialog):
         self.setLayout(layout)
 
         db_layout = QHBoxLayout()
-        db_label = QLabel("DatabÃ¡ze (SQLite soubor):")
+        db_label = QLabel("Databáze (SQLite soubor):")
         self.db_edit = QLineEdit(settings.db_path)
-        db_button = QPushButton("Vybratâ¦")
+        db_button = QPushButton("Vybrat…")
         db_button.clicked.connect(self._choose_db)
         db_layout.addWidget(db_label)
         db_layout.addWidget(self.db_edit)
@@ -247,7 +247,7 @@ class SettingsDialog(QDialog):
         layout.addLayout(db_layout)
 
         width_layout = QHBoxLayout()
-        width_label = QLabel("Å Ã­Åka exportu (px):")
+        width_label = QLabel("Šířka exportu (px):")
         self.width_spin = QSpinBox()
         self.width_spin.setRange(400, 3200)
         self.width_spin.setSingleStep(100)
@@ -256,14 +256,14 @@ class SettingsDialog(QDialog):
         width_layout.addWidget(self.width_spin)
         layout.addLayout(width_layout)
 
-        info_label = QLabel("PomÄr oÅezu se volÃ­ podle layoutu a nenÃ­ tÅeba jej mÄnit.")
+        info_label = QLabel("Poměr ořezu se volí podle layoutu a není třeba jej měnit.")
         info_label.setWordWrap(True)
         layout.addWidget(info_label)
 
         btn_layout = QHBoxLayout()
         btn_layout.addStretch(1)
-        save_btn = QPushButton("UloÅ¾it")
-        cancel_btn = QPushButton("ZruÅ¡it")
+        save_btn = QPushButton("Uložit")
+        cancel_btn = QPushButton("Zrušit")
         save_btn.clicked.connect(self.accept)
         cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(save_btn)
@@ -273,9 +273,9 @@ class SettingsDialog(QDialog):
     def _choose_db(self):
         path, _ = QFileDialog.getSaveFileName(
             self,
-            "Vyberte nebo vytvoÅte databÃ¡zi",
+            "Vyberte nebo vytvořte databázi",
             self.db_edit.text(),
-            "SQLite DB (*.db *.sqlite *.sqlite3);;VÅ¡e (*.*)",
+            "SQLite DB (*.db *.sqlite *.sqlite3);;Vše (*.*)",
         )
         if path:
             self.db_edit.setText(path)
@@ -326,13 +326,13 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.preview)
 
         controls = QHBoxLayout()
-        add_btn = QPushButton("PÅidat")
+        add_btn = QPushButton("Přidat")
         edit_btn = QPushButton("Upravit")
         delete_btn = QPushButton("Smazat")
         pdf_btn = QPushButton("PDF")
         print_btn = QPushButton("Tisk")
-        save_btn = QPushButton("UloÅ¾it")
-        settings_btn = QPushButton("NastavenÃ­")
+        save_btn = QPushButton("Uložit")
+        settings_btn = QPushButton("Nastavení")
 
         add_btn.clicked.connect(self._add_card)
         edit_btn.clicked.connect(self._rename_card)
