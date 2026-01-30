@@ -1,677 +1,535 @@
 from __future__ import annotations
 
-import io
-import os
 import sys
 import traceback
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
-
-from PIL import Image, ImageTk
+from PIL import Image
+from PIL.ImageQt import ImageQt
+from PySide6.QtCore import QSize, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QImage,
+    QPainter,
+    QPen,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QDialog,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QInputDialog,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QSpinBox,
+    QSplitter,
+    QStatusBar,
+    QVBoxLayout,
+    QWidget,
+)
 
 from .db import Database, Card, copy_db_file
-from .settings import Settings, load_settings, save_settings, default_db_path
 from .image_editor import edit_image_dialog
-from .pdf_utils import generate_card_pdf, open_pdf, print_pdf_windows, make_temp_pdf_path
+from .pdf_utils import generate_card_pdf, make_temp_pdf_path, open_pdf, print_pdf_windows
+from .settings import Settings, load_settings, save_settings, default_db_path
 
 APP_TITLE = "KajovoPasport"
-
-# Pozn.: v zadání je „13 miniatur“, ale seznam obsahuje 16 názvů – držíme se seznamu.
+APP_MARGIN = 16
+APP_BG = QColor("#f4f6fb")
+PREVIEW_BG = QColor("#ffffff")
+CELL_BORDER = QColor("#d1dae8")
+CELL_BG = QColor("#fbfbff")
+LABEL_COLOR = QColor("#1f2a37")
+TITLE_FONT = QFont("Segoe UI Variable", 18, QFont.Bold)
+SUBTITLE_FONT = QFont("Segoe UI Variable", 10)
+FIELD_FONT = QFont("Segoe UI Variable", 9)
+CELL_LABEL_FONT = QFont("Segoe UI Variable", 9, QFont.Bold)
+GRID_ROWS = 4
+GRID_COLS = 4
 FIELDS: List[Tuple[str, str]] = [
-    ("skrin", "skříň"),
-    ("satna", "šatna"),
-    ("stolek", "stolek"),
-    ("okno_obyvak", "okno obývák"),
-    ("tv", "tv"),
-    ("svetla_obyvak", "světla obývák"),
-    ("postel_1", "postel 1"),
-    ("postel_2", "postel 2"),
-    ("postel_3", "postel 3"),
-    ("okno_koupelna", "okno koupelna"),
-    ("wc", "wc"),
-    ("umyvadlo", "umyvadlo"),
-    ("sprcha", "sprcha"),
-    ("koupelna_svetla", "koupelna světla"),
-    ("dvere_vchod", "dveře vchod"),
-    ("dvere_koupelna", "dveře koupelna"),
+    ("skrin", "SKŘÍŇ"),
+    ("satna", "ŠATNA"),
+    ("stolek", "STŮL"),
+    ("okno_obyvak", "OKNO LOŽNICE"),
+    ("tv", "TV"),
+    ("svetla_obyvak", "SVĚTLA"),
+    ("postel_1", "POSTEL 1"),
+    ("postel_2", "POSTEL 2"),
+    ("postel_3", "POSTEL 3"),
+    ("okno_koupelna", "OKNO WC"),
+    ("wc", "WC"),
+    ("umyvadlo", "UMYVADLO"),
+    ("sprcha", "SPRCHA"),
+    ("koupelna_svetla", "OSVĚTLENÍ KOUPELNY"),
+    ("dvere_vchod", "DVEŘE 1"),
+    ("dvere_koupelna", "DVEŘE 2"),
 ]
 
-APP_BG = "#f4f6fb"
-PREVIEW_BG = "#f9fbff"
-ACCENT_COLOR = "#0f62fe"
 
 
-def human_exception(e: Exception) -> str:
-    return f"{type(e).__name__}: {e}"
+class PreviewWidget(QWidget):
+    fieldClicked = Signal(str)
+    fieldRightClicked = Signal(str)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setMouseTracking(True)
+        self.card_name: str = ""
+        self.field_images: Dict[str, bytes] = {}
+        self.cell_boxes: List[Tuple[str, QRectF]] = []
+        self.image_bounds: Dict[str, QRectF] = {}
+
+    def sizeHint(self) -> QSize:
+        return QSize(960, 720)
+
+    def set_card(self, name: str, images: Dict[str, bytes]) -> None:
+        self.card_name = name
+        self.field_images = images
+        self.update()
+
+    def clear_card(self) -> None:
+        self.card_name = ""
+        self.field_images = {}
+        self.update()
+
+    def paintEvent(self, event) -> None:
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), APP_BG)
+        cw = max(1, self.width())
+        ch = max(1, self.height())
+        pad = APP_MARGIN
+        a4_ratio = 210 / 297
+        avail_w = max(1, cw - 2 * pad)
+        avail_h = max(1, ch - 2 * pad)
+        page_h = avail_h
+        page_w = int(page_h * a4_ratio)
+        if page_w > avail_w:
+            page_w = avail_w
+            page_h = int(page_w / a4_ratio)
+
+        px0 = (cw - page_w) / 2
+        py0 = (ch - page_h) / 2
+        grid_margin = max(12, int(page_w * 0.03))
+        ix0 = px0 + grid_margin
+        iy0 = py0 + grid_margin
+        ix1 = px0 + page_w - grid_margin
+        iy1 = py0 + page_h - grid_margin
+
+        # Draw page frame
+        painter.setPen(QPen(CELL_BORDER, 2))
+        painter.setBrush(PREVIEW_BG)
+        painter.drawRect(px0, py0, page_w, page_h)
+
+        # Header area
+        painter.setFont(TITLE_FONT)
+        painter.setPen(LABEL_COLOR)
+        header_height = 30
+        title_rect = QRectF(ix0, iy0, ix1 - ix0, header_height)
+        title_text = (self.card_name or "").upper()
+        painter.drawText(title_rect, Qt.AlignCenter | Qt.AlignVCenter, title_text)
+        grid_top = iy0 + header_height + 4
+        grid_bottom = iy1
+        grid_h = max(1, grid_bottom - grid_top)
+        grid_w = max(1, ix1 - ix0)
+
+        gap = 1
+        cell_w = (grid_w - gap * (GRID_COLS - 1)) / GRID_COLS
+        cell_h = (grid_h - gap * (GRID_ROWS - 1)) / GRID_ROWS
+        label_h = max(10, int(cell_h * 0.08))
+        img_pad = 4
+
+        self.cell_boxes.clear()
+        self.image_bounds.clear()
+
+        for idx, (key, label) in enumerate(FIELDS):
+            row = idx // GRID_COLS
+            col = idx % GRID_COLS
+            x = ix0 + col * (cell_w + gap)
+            y = grid_top + row * (cell_h + gap)
+            rect = QRectF(x, y, cell_w, cell_h)
+
+            painter.setPen(QPen(CELL_BORDER, 1))
+            painter.setBrush(CELL_BG)
+            painter.drawRoundedRect(rect, 4, 4)
+
+            label_rect = QRectF(
+                x + img_pad,
+                y + cell_h - label_h - img_pad,
+                cell_w - 2 * img_pad,
+                label_h,
+            )
+            painter.setPen(LABEL_COLOR)
+            painter.setFont(CELL_LABEL_FONT)
+            metrics = painter.fontMetrics()
+            max_width = max(1, int(label_rect.width()))
+            text_to_draw = metrics.elidedText(label.upper(), Qt.ElideRight, max_width)
+            painter.drawText(label_rect, Qt.AlignCenter | Qt.AlignVCenter, text_to_draw)
+
+            img_rect = QRectF(
+                x + img_pad,
+                y + img_pad,
+                cell_w - 2 * img_pad,
+                cell_h - label_h - 2 * img_pad,
+            )
+            painter.setPen(QPen(QColor("#d6d9e3"), 1))
+            painter.setBrush(Qt.white)
+            painter.drawRect(img_rect)
+
+            self.cell_boxes.append((key, rect))
+            self.image_bounds[key] = img_rect
+
+            png = self.field_images.get(key)
+            if png:
+                image = QImage.fromData(png)
+                if not image.isNull():
+                    pixmap = QPixmap.fromImage(image)
+                    scaled = pixmap.scaled(
+                        int(img_rect.width()),
+                        int(img_rect.height()),
+                        Qt.KeepAspectRatio,
+                        Qt.SmoothTransformation,
+                    )
+                    dx = img_rect.x() + (img_rect.width() - scaled.width()) / 2
+                    dy = img_rect.y() + (img_rect.height() - scaled.height()) / 2
+                    painter.drawPixmap(int(dx), int(dy), scaled)
+
+        if not self.card_name:
+            painter.setFont(SUBTITLE_FONT)
+            painter.setPen(QColor("#6b7280"))
+            painter.drawText(
+                QRectF(px0, py0, page_w, page_h),
+                Qt.AlignCenter,
+                "VLEVO VYTVOŘTE NEBO VYBERTE PASPORTNÍ KARTU.",
+            )
+
+    def field_at(self, pos):
+        for key, rect in self.cell_boxes:
+            if rect.contains(pos):
+                return key
+        return None
+
+    def mousePressEvent(self, event):
+        key = self.field_at(event.position())
+        if not key:
+            return
+        if event.button() == Qt.LeftButton:
+            self.fieldClicked.emit(key)
+        elif event.button() == Qt.RightButton:
+            self.fieldRightClicked.emit(key)
 
 
-class SettingsDialog(tk.Toplevel):
-    def __init__(self, master: tk.Misc, settings: Settings):
-        super().__init__(master)
-        self.title("Nastavení")
-        self.transient(master)
-        self.grab_set()
-        self.resizable(False, False)
+class SettingsDialog(QDialog):
+    def __init__(self, settings: Settings, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setWindowTitle("NastavenÃ­")
+        self.setMinimumSize(480, 200)
+        self.settings = settings
 
-        self._result: Optional[Settings] = None
+        layout = QVBoxLayout()
+        self.setLayout(layout)
 
-        self.var_db = tk.StringVar(value=settings.db_path)
-        self.var_ratio = tk.StringVar(value=settings.aspect_ratio)
-        self.var_width = tk.IntVar(value=settings.output_width_px)
+        db_layout = QHBoxLayout()
+        db_label = QLabel("DatabÃ¡ze (SQLite soubor):")
+        self.db_edit = QLineEdit(settings.db_path)
+        db_button = QPushButton("Vybratâ¦")
+        db_button.clicked.connect(self._choose_db)
+        db_layout.addWidget(db_label)
+        db_layout.addWidget(self.db_edit)
+        db_layout.addWidget(db_button)
+        layout.addLayout(db_layout)
 
-        frm = ttk.Frame(self, padding=12)
-        frm.grid(row=0, column=0, sticky="nsew")
-        frm.columnconfigure(1, weight=1)
+        width_layout = QHBoxLayout()
+        width_label = QLabel("Å Ã­Åka exportu (px):")
+        self.width_spin = QSpinBox()
+        self.width_spin.setRange(400, 3200)
+        self.width_spin.setSingleStep(100)
+        self.width_spin.setValue(settings.output_width_px)
+        width_layout.addWidget(width_label)
+        width_layout.addWidget(self.width_spin)
+        layout.addLayout(width_layout)
 
-        ttk.Label(frm, text="Databáze (SQLite soubor):").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        ent = ttk.Entry(frm, textvariable=self.var_db, width=50)
-        ent.grid(row=0, column=1, sticky="ew", pady=(0, 6))
-        ttk.Button(frm, text="Vybrat…", command=self._browse_db).grid(row=0, column=2, padx=(8, 0), pady=(0, 6))
+        info_label = QLabel("PomÄr oÅezu se volÃ­ podle layoutu a nenÃ­ tÅeba jej mÄnit.")
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
 
-        ttk.Label(frm, text="Poměr ořezu (portrét):").grid(row=1, column=0, sticky="w", pady=(0, 6))
-        cb = ttk.Combobox(frm, textvariable=self.var_ratio, state="readonly", values=["2:3", "3:4", "4:5"])
-        cb.grid(row=1, column=1, sticky="w", pady=(0, 6))
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch(1)
+        save_btn = QPushButton("UloÅ¾it")
+        cancel_btn = QPushButton("ZruÅ¡it")
+        save_btn.clicked.connect(self.accept)
+        cancel_btn.clicked.connect(self.reject)
+        btn_layout.addWidget(save_btn)
+        btn_layout.addWidget(cancel_btn)
+        layout.addLayout(btn_layout)
 
-        ttk.Label(frm, text="Šířka exportu (px):").grid(row=2, column=0, sticky="w", pady=(0, 6))
-        sp = ttk.Spinbox(frm, from_=400, to=2400, increment=100, textvariable=self.var_width, width=10)
-        sp.grid(row=2, column=1, sticky="w", pady=(0, 6))
-
-        btns = ttk.Frame(frm)
-        btns.grid(row=3, column=0, columnspan=3, sticky="e", pady=(8, 0))
-        ttk.Button(btns, text="Uložit", command=self._on_ok).grid(row=0, column=0, padx=4)
-        ttk.Button(btns, text="Zrušit", command=self._on_cancel).grid(row=0, column=1, padx=4)
-
-        self.protocol("WM_DELETE_WINDOW", self._on_cancel)
-
-    def _browse_db(self) -> None:
-        path = filedialog.asksaveasfilename(
-            title="Vyberte nebo vytvořte databázi",
-            defaultextension=".db",
-            filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("Vše", "*.*")],
-            initialfile=Path(self.var_db.get()).name or "kajovopasport.db",
+    def _choose_db(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Vyberte nebo vytvoÅte databÃ¡zi",
+            self.db_edit.text(),
+            "SQLite DB (*.db *.sqlite *.sqlite3);;VÅ¡e (*.*)",
         )
         if path:
-            self.var_db.set(path)
+            self.db_edit.setText(path)
 
-    def _on_ok(self) -> None:
-        s = Settings(
-            db_path=str(self.var_db.get()).strip() or str(default_db_path()),
-            aspect_ratio=str(self.var_ratio.get()).strip() or "2:3",
-            output_width_px=int(self.var_width.get()),
+    def get_values(self) -> Settings:
+        return Settings(
+            db_path=self.db_edit.text().strip() or str(default_db_path()),
+            output_width_px=self.width_spin.value(),
         )
-        self._result = s
-        self.destroy()
-
-    def _on_cancel(self) -> None:
-        self._result = None
-        self.destroy()
-
-    def result(self) -> Optional[Settings]:
-        return self._result
 
 
-class App:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title(APP_TITLE)
-        self.root.configure(bg=APP_BG)
-
-        # Maximalizovat na hlavním monitoru (Windows)
-        try:
-            self.root.state("zoomed")
-        except Exception:
-            pass
-
-        self.style = ttk.Style(self.root)
-        try:
-            self.style.theme_use("clam")
-        except Exception:
-            pass
-        self.style.configure("Header.TFrame", background=APP_BG)
-        self.style.configure("Status.TLabel", background=APP_BG, foreground="#333333")
-        self.style.configure(
-            "Accent.TButton",
-            foreground="white",
-            background=ACCENT_COLOR,
-            font=("Segoe UI", 9, "bold"),
-            padding=6,
-        )
-        self.style.map(
-            "Accent.TButton",
-            background=[("active", "#0a54c9"), ("pressed", "#084298")],
-            relief=[("pressed", "sunken"), ("!pressed", "raised")],
-        )
+class MainWindow(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle(APP_TITLE)
+        self.resize(1200, 800)
 
         self.settings = load_settings()
         self.db = Database(self.settings.db_path)
-
         self.cards: List[Card] = []
         self.current_card: Optional[Card] = None
         self.current_images: Dict[str, bytes] = {}
 
-        # Preview assets
-        self._thumb_photos: Dict[str, ImageTk.PhotoImage] = {}
-        self._cell_boxes: List[Tuple[str, Tuple[int, int, int, int]]] = []  # field_key -> rect
-        self._page_box: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        central = QWidget()
+        main_layout = QVBoxLayout()
+        central.setLayout(main_layout)
+        self.setCentralWidget(central)
 
-        self._build_ui()
-        self._bind_events()
+        header = QLabel(APP_TITLE)
+        header.setFont(TITLE_FONT)
+        main_layout.addWidget(header)
+
+        splitter = QSplitter(Qt.Horizontal)
+        main_layout.addWidget(splitter)
+
+        self.card_list = QListWidget()
+        self.card_list.currentTextChanged.connect(self._on_card_select)
+        splitter.addWidget(self.card_list)
+
+        right_panel = QWidget()
+        right_layout = QVBoxLayout()
+        right_panel.setLayout(right_layout)
+        splitter.addWidget(right_panel)
+
+        self.preview = PreviewWidget()
+        self.preview.fieldClicked.connect(self._open_image_for_field)
+        self.preview.fieldRightClicked.connect(self._clear_image_for_field)
+        right_layout.addWidget(self.preview)
+
+        controls = QHBoxLayout()
+        add_btn = QPushButton("PÅidat")
+        edit_btn = QPushButton("Upravit")
+        delete_btn = QPushButton("Smazat")
+        pdf_btn = QPushButton("PDF")
+        print_btn = QPushButton("Tisk")
+        save_btn = QPushButton("UloÅ¾it")
+        settings_btn = QPushButton("NastavenÃ­")
+
+        add_btn.clicked.connect(self._add_card)
+        edit_btn.clicked.connect(self._rename_card)
+        delete_btn.clicked.connect(self._delete_card)
+        pdf_btn.clicked.connect(self._export_pdf)
+        print_btn.clicked.connect(self._print_card)
+        save_btn.clicked.connect(self._commit)
+        settings_btn.clicked.connect(self._open_settings)
+
+        for btn in (add_btn, edit_btn, delete_btn, pdf_btn, print_btn, save_btn, settings_btn):
+            controls.addWidget(btn)
+
+        right_layout.addLayout(controls)
+
+        self.status_bar = QStatusBar()
+        self.setStatusBar(self.status_bar)
 
         self.refresh_cards()
         self.select_first_card()
 
-    def _build_ui(self) -> None:
-        self.root.columnconfigure(0, weight=1)
-        self.root.rowconfigure(2, weight=1)
-
-        header = ttk.Frame(self.root, padding=(12, 10, 12, 6), style="Header.TFrame")
-        header.grid(row=0, column=0, sticky="ew")
-        header.columnconfigure(0, weight=0)
-        header.columnconfigure(1, weight=1)
-        header.columnconfigure(2, weight=0)
-
-        ttk.Label(header, text=APP_TITLE, font=("Segoe UI SemiBold", 18), foreground="#111").grid(
-            row=0, column=0, sticky="w", padx=(0, 12)
-        )
-        ttk.Label(
-            header,
-            text="Profesionální tiskový pasport pro Kajovo",
-            font=("Segoe UI", 10),
-            foreground="#555",
-        ).grid(row=1, column=0, sticky="w", padx=(0, 12))
-
-        left_btns = ttk.Frame(header)
-        left_btns.grid(row=0, column=1, sticky="w")
-        ttk.Button(left_btns, text="Nastavení", command=self.on_settings).grid(row=0, column=0, padx=3)
-        ttk.Button(left_btns, text="Load", command=self.on_load_db).grid(row=0, column=1, padx=3)
-        ttk.Button(left_btns, text="Save", command=self.on_save_db_as).grid(row=0, column=2, padx=3)
-
-        ttk.Button(header, text="Exit", command=self.on_exit).grid(row=0, column=2, sticky="e")
-        ttk.Separator(self.root, orient="horizontal").grid(row=1, column=0, sticky="ew")
-
-        # Main split
-        main = ttk.Frame(self.root, padding=(10, 8))
-        main.grid(row=2, column=0, sticky="nsew")
-        main.columnconfigure(0, weight=0)
-        main.columnconfigure(1, weight=1)
-        main.rowconfigure(0, weight=1)
-
-        # Left column: cards list
-        left = ttk.Frame(main)
-        left.grid(row=0, column=0, sticky="nsw", padx=(0, 10))
-        left.rowconfigure(1, weight=1)
-
-        ttk.Label(left, text="Pasportní karty", font=("Segoe UI", 11, "bold")).grid(row=0, column=0, sticky="w")
-
-        self.listbox = tk.Listbox(left, height=20, exportselection=False, font=("Segoe UI", 10), bg="white", bd=0, highlightthickness=0)
-        self.listbox.grid(row=1, column=0, sticky="nsw")
-        self.listbox.config(width=28)
-
-        lb_scroll = ttk.Scrollbar(left, orient="vertical", command=self.listbox.yview)
-        lb_scroll.grid(row=1, column=1, sticky="ns")
-        self.listbox.config(yscrollcommand=lb_scroll.set)
-
-        left_btns2 = ttk.Frame(left)
-        left_btns2.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
-        ttk.Button(left_btns2, text="Přidat", command=self.on_add_card).grid(row=0, column=0, padx=3)
-        ttk.Button(left_btns2, text="Upravit", command=self.on_rename_card).grid(row=0, column=1, padx=3)
-        ttk.Button(left_btns2, text="Smazat", command=self.on_delete_card).grid(row=0, column=2, padx=3)
-
-        # Right column: preview + actions
-        right = ttk.Frame(main)
-        right.grid(row=0, column=1, sticky="nsew")
-        right.columnconfigure(0, weight=1)
-        right.rowconfigure(0, weight=1)
-
-        self.preview_canvas = tk.Canvas(right, bg=PREVIEW_BG, highlightthickness=0)
-        self.preview_canvas.grid(row=0, column=0, sticky="nsew")
-
-        action_bar = ttk.Frame(right, padding=(0, 8, 0, 0))
-        action_bar.grid(row=1, column=0, sticky="ew")
-        action_bar.columnconfigure(0, weight=1)
-
-        ttk.Button(action_bar, text="Upravit", command=self.on_rename_card).grid(row=0, column=0, padx=4, sticky="w")
-        ttk.Button(action_bar, text="Uložit", command=self.on_commit).grid(row=0, column=1, padx=4, sticky="w")
-        ttk.Button(action_bar, text="PDF", command=self.on_pdf, style="Accent.TButton").grid(
-            row=0, column=2, padx=4, sticky="w"
-        )
-        ttk.Button(action_bar, text="Tisknout", command=self.on_print, style="Accent.TButton").grid(
-            row=0, column=3, padx=4, sticky="w"
-        )
-
-        # Status bar
-        self.status = tk.StringVar(value="")
-        status_lbl = ttk.Label(self.root, textvariable=self.status, padding=(10, 6), style="Status.TLabel")
-        status_lbl.grid(row=3, column=0, sticky="ew")
-
-        # Context menu for clearing image
-        self.cell_menu = tk.Menu(self.root, tearoff=0)
-        self.cell_menu.add_command(label="Vymazat obrázek", command=self._clear_last_cell)
-        self._last_clicked_field: Optional[str] = None
-
-    def _bind_events(self) -> None:
-        self.listbox.bind("<<ListboxSelect>>", lambda e: self.on_list_select())
-        self.listbox.bind("<Motion>", self.on_list_hover)
-        self.listbox.bind("<Double-Button-1>", lambda e: self.on_rename_card())
-
-        self.preview_canvas.bind("<Configure>", lambda e: self.render_preview())
-        self.preview_canvas.bind("<Button-1>", self.on_preview_click)
-        self.preview_canvas.bind("<Button-3>", self.on_preview_right_click)
-
-    # ---------------------------
-    # Data/UI refresh
-    # ---------------------------
     def refresh_cards(self) -> None:
         self.cards = self.db.list_cards()
-        self.listbox.delete(0, tk.END)
-        for c in self.cards:
-            self.listbox.insert(tk.END, c.name)
+        self.card_list.clear()
+        for card in self.cards:
+            item = QListWidgetItem(card.name)
+            self.card_list.addItem(item)
 
     def select_first_card(self) -> None:
         if not self.cards:
             self.current_card = None
             self.current_images = {}
-            self.render_preview()
+            self.preview.clear_card()
             return
-        self.listbox.selection_clear(0, tk.END)
-        self.listbox.selection_set(0)
-        self.listbox.activate(0)
-        self.on_list_select()
+        self.card_list.setCurrentRow(0)
 
-    def _find_card_by_name(self, name: str) -> Optional[Card]:
-        for c in self.cards:
-            if c.name == name:
-                return c
-        return None
+    def _on_card_select(self, name: str) -> None:
+        card = next((c for c in self.cards if c.name == name), None)
+        if card:
+            self.current_card = card
+            self.current_images = self.db.get_images_for_card(card.id)
+            self.preview.set_card(card.name, self.current_images)
 
-    def on_list_select(self) -> None:
-        sel = self.listbox.curselection()
-        if not sel:
-            return
-        name = self.listbox.get(sel[0])
-        card = self._find_card_by_name(name)
-        if not card:
-            return
-        self.current_card = card
-        self.current_images = self.db.get_images_for_card(card.id)
-        self.render_preview()
+    def _add_card(self) -> None:
+        name, ok = QInputDialog.getText(self, "NovÃ¡ karta", "Zadejte nÃ¡zev pasportnÃ­ karty:")
+        if ok and name.strip():
+            try:
+                self.db.create_card(name.strip())
+                self.refresh_cards()
+                self.select_card_by_name(name.strip())
+            except Exception as exc:
+                QMessageBox.critical(self, "Chyba", f"NepodaÅilo se vytvoÅit kartu: {exc}")
 
-    def on_list_hover(self, event: tk.Event) -> None:
-        idx = self.listbox.nearest(event.y)
-        if idx is None:
-            return
-        if idx < 0 or idx >= self.listbox.size():
-            return
-        cur = self.listbox.curselection()
-        if cur and cur[0] == idx:
-            return
-        self.listbox.selection_clear(0, tk.END)
-        self.listbox.selection_set(idx)
-        self.listbox.activate(idx)
-        self.on_list_select()
+    def select_card_by_name(self, name: str):
+        matches = self.card_list.findItems(name, Qt.MatchExactly)
+        if matches:
+            self.card_list.setCurrentItem(matches[0])
 
-    # ---------------------------
-    # Card operations
-    # ---------------------------
-    def on_add_card(self) -> None:
-        name = simpledialog.askstring("Nová karta", "Zadejte název pasportní karty:", parent=self.root)
-        if not name:
-            return
-        name = name.strip()
-        if not name:
-            return
-        try:
-            self.db.create_card(name)
-            self.refresh_cards()
-            # select new
-            for i in range(self.listbox.size()):
-                if self.listbox.get(i) == name:
-                    self.listbox.selection_clear(0, tk.END)
-                    self.listbox.selection_set(i)
-                    self.listbox.activate(i)
-                    break
-            self.on_list_select()
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Nepodařilo se vytvořit kartu: {human_exception(e)}")
-
-    def on_rename_card(self) -> None:
+    def _rename_card(self) -> None:
         if not self.current_card:
             return
-        new_name = simpledialog.askstring("Upravit kartu", "Nový název:", initialvalue=self.current_card.name, parent=self.root)
-        if not new_name:
-            return
-        new_name = new_name.strip()
-        if not new_name:
-            return
-        try:
-            self.db.rename_card(self.current_card.id, new_name)
-            self.refresh_cards()
-            for i in range(self.listbox.size()):
-                if self.listbox.get(i) == new_name:
-                    self.listbox.selection_clear(0, tk.END)
-                    self.listbox.selection_set(i)
-                    self.listbox.activate(i)
-                    break
-            self.on_list_select()
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Nepodařilo se přejmenovat kartu: {human_exception(e)}")
+        name, ok = QInputDialog.getText(
+            self,
+            "Upravit kartu",
+            "NovÃ½ nÃ¡zev:",
+            text=self.current_card.name,
+        )
+        if ok and name.strip():
+            try:
+                self.db.rename_card(self.current_card.id, name.strip())
+                self.refresh_cards()
+                self.select_card_by_name(name.strip())
+            except Exception as exc:
+                QMessageBox.critical(self, "Chyba", f"NepodaÅilo se pÅejmenovat kartu: {exc}")
 
-    def on_delete_card(self) -> None:
+    def _delete_card(self) -> None:
         if not self.current_card:
             return
-        if not messagebox.askyesno("Smazat", f"Opravdu smazat kartu „{self.current_card.name}“?"):
-            return
-        try:
-            cid = self.current_card.id
-            self.db.delete_card(cid)
+        resp = QMessageBox.question(
+            self,
+            "Smazat",
+            f"Opravdu smazat kartu '{self.current_card.name}'?",
+        )
+        if resp == QMessageBox.Yes:
+            try:
+                self.db.delete_card(self.current_card.id)
+                self.refresh_cards()
+                self.select_first_card()
+            except Exception as exc:
+                QMessageBox.critical(self, "Chyba", f"NepodaÅilo se smazat kartu: {exc}")
+
+    def _open_settings(self) -> None:
+        dlg = SettingsDialog(self.settings, self)
+        if dlg.exec() == QDialog.Accepted:
+            self.settings = dlg.get_values()
+            save_settings(self.settings)
+            self.db.close()
+            self.db = Database(self.settings.db_path)
             self.refresh_cards()
             self.select_first_card()
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Nepodařilo se smazat kartu: {human_exception(e)}")
 
-    # ---------------------------
-    # Header operations
-    # ---------------------------
-    def on_settings(self) -> None:
-        dlg = SettingsDialog(self.root, self.settings)
-        dlg.wait_window()
-        res = dlg.result()
-        if not res:
-            return
-
-        db_changed = Path(res.db_path) != Path(self.settings.db_path)
-        self.settings = res
-        save_settings(self.settings)
-
-        if db_changed:
-            self._reopen_db(self.settings.db_path)
-        self.render_preview()
-
-    def _reopen_db(self, path: str) -> None:
-        try:
-            self.db.close()
-        except Exception:
-            pass
-        self.db = Database(path)
-        self.refresh_cards()
-        self.select_first_card()
-        self.status.set(f"Otevřena databáze: {path}")
-
-    def on_load_db(self) -> None:
-        path = filedialog.askopenfilename(
-            title="Load databáze",
-            filetypes=[("SQLite DB", "*.db *.sqlite *.sqlite3"), ("Vše", "*.*")],
-        )
-        if not path:
-            return
-        self.settings.db_path = path
-        save_settings(self.settings)
-        self._reopen_db(path)
-
-    def on_save_db_as(self) -> None:
-        if not Path(self.settings.db_path).exists():
-            messagebox.showwarning("Upozornění", "Aktuální databáze neexistuje.")
-            return
-        dst = filedialog.asksaveasfilename(
-            title="Save databáze jako…",
-            defaultextension=".db",
-            filetypes=[("SQLite DB", "*.db"), ("Vše", "*.*")],
-            initialfile=Path(self.settings.db_path).name,
-        )
-        if not dst:
-            return
-        try:
-            copy_db_file(self.settings.db_path, dst)
-            self.status.set(f"Uloženo: {dst}")
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Nepodařilo se uložit kopii: {human_exception(e)}")
-
-    def on_exit(self) -> None:
-        self.root.destroy()
-
-    # ---------------------------
-    # Right panel actions
-    # ---------------------------
-    def on_commit(self) -> None:
-        try:
-            self.db.commit()
-            self.status.set("Uloženo.")
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Uložení selhalo: {human_exception(e)}")
-
-    def on_pdf(self) -> None:
+    def _export_pdf(self) -> None:
         if not self.current_card:
             return
         try:
             pdf_path = make_temp_pdf_path(self.current_card.name)
-            images = self.db.get_images_for_card(self.current_card.id)
-            generate_card_pdf(pdf_path, self.current_card.name, FIELDS, images)
+            generate_card_pdf(pdf_path, self.current_card.name, FIELDS, self.current_images)
             open_pdf(pdf_path)
-            self.status.set(f"PDF vytvořeno: {pdf_path}")
-        except Exception as e:
-            messagebox.showerror("Chyba", f"PDF selhalo: {human_exception(e)}")
+            self.status_bar.showMessage(f"PDF vytvoÅeno: {pdf_path}", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Chyba", f"PDF selhalo: {exc}")
 
-    def on_print(self) -> None:
+    def _print_card(self) -> None:
         if not self.current_card:
             return
         try:
             pdf_path = make_temp_pdf_path(self.current_card.name)
-            images = self.db.get_images_for_card(self.current_card.id)
-            generate_card_pdf(pdf_path, self.current_card.name, FIELDS, images)
+            generate_card_pdf(pdf_path, self.current_card.name, FIELDS, self.current_images)
             ok = print_pdf_windows(pdf_path)
             if not ok:
                 open_pdf(pdf_path)
-                messagebox.showinfo(
+                QMessageBox.information(
+                    self,
                     "Tisk",
-                    "Nepodařilo se spustit tisk automaticky.\n"
-                    "Otevírám PDF – vytiskněte ho prosím ručně z prohlížeče.",
+                    "NepodaÅilo se spustit tisk automaticky, otevÅel jsem PDF pro manuÃ¡lnÃ­ tisk.",
                 )
-            self.status.set("Tisk spuštěn (nebo otevřeno PDF).")
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Tisk selhal: {human_exception(e)}")
+            self.status_bar.showMessage("Tisk spuÅ¡tÄn nebo PDF otevÅeno.", 5000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Chyba", f"Tisk selhal: {exc}")
 
-    # ---------------------------
-    # Preview rendering / interaction
-    # ---------------------------
-    def render_preview(self) -> None:
-        c = self.preview_canvas
-        cw = max(1, int(c.winfo_width()))
-        ch = max(1, int(c.winfo_height()))
-        c.delete("all")
-        self._thumb_photos = {}
-        self._cell_boxes = []
-        self._last_clicked_field = None
-
-        c.create_rectangle(0, 0, cw, ch, fill="#ececec", outline="")
-
-        # A4 portrait ratio
-        a4_ratio = 210 / 297  # width/height
-        pad = 20
-        avail_w = max(1, cw - 2 * pad)
-        avail_h = max(1, ch - 2 * pad)
-
-        page_h = avail_h
-        page_w = int(round(page_h * a4_ratio))
-        if page_w > avail_w:
-            page_w = avail_w
-            page_h = int(round(page_w / a4_ratio))
-
-        px0 = (cw - page_w) // 2
-        py0 = (ch - page_h) // 2
-        px1 = px0 + page_w
-        py1 = py0 + page_h
-        self._page_box = (px0, py0, px1, py1)
-
-        c.create_rectangle(px0, py0, px1, py1, fill="white", outline="#666666", width=2)
-
-        margin = max(8, int(round(page_w * 0.03)))
-        ix0 = px0 + margin
-        iy0 = py0 + margin
-        ix1 = px1 - margin
-        iy1 = py1 - margin
-
-        title = self.current_card.name if self.current_card else "(žádná karta)"
-        c.create_text(ix0, iy0, anchor="nw", text=title, font=("Segoe UI", 14, "bold"), fill="black")
-
-        title_h = 30
-        grid_top = iy0 + title_h + 6
-        grid_bottom = iy1
-        grid_h = max(1, grid_bottom - grid_top)
-        grid_w = max(1, ix1 - ix0)
-
-        cols = 4
-        rows = 4
-        gap = max(6, int(round(page_w * 0.015)))
-
-        cell_w = (grid_w - gap * (cols - 1)) // cols
-        cell_h = (grid_h - gap * (rows - 1)) // rows
-
-        label_h = max(16, int(cell_h * 0.18))
-        img_pad = 6
-
-        images = self.current_images if self.current_card else {}
-        for idx, (field_key, label) in enumerate(FIELDS):
-            r = idx // cols
-            col = idx % cols
-
-            x = ix0 + col * (cell_w + gap)
-            y = grid_top + r * (cell_h + gap)
-            x2 = x + cell_w
-            y2 = y + cell_h
-
-            c.create_rectangle(x, y, x2, y2, outline="#999999", width=1)
-
-            c.create_rectangle(x, y2 - label_h, x2, y2, outline="", fill="#f7f7f7")
-            c.create_text(x + 6, y2 - label_h + 2, anchor="nw", text=label, font=("Segoe UI", 9), fill="black")
-
-            img_x0 = x + img_pad
-            img_y0 = y + img_pad
-            img_x1 = x2 - img_pad
-            img_y1 = y2 - label_h - img_pad
-
-            c.create_rectangle(img_x0, img_y0, img_x1, img_y1, outline="#cccccc", width=1, fill="white")
-
-            png_bytes = images.get(field_key)
-            if png_bytes:
-                try:
-                    im = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
-                    tw = max(1, img_x1 - img_x0)
-                    th = max(1, img_y1 - img_y0)
-                    iw, ih = im.size
-                    scale = min(tw / iw, th / ih)
-                    nw = max(1, int(round(iw * scale)))
-                    nh = max(1, int(round(ih * scale)))
-                    thumb = im.resize((nw, nh), resample=Image.LANCZOS)
-                    photo = ImageTk.PhotoImage(thumb)
-                    self._thumb_photos[field_key] = photo
-                    cx = img_x0 + (tw - nw) // 2
-                    cy = img_y0 + (th - nh) // 2
-                    c.create_image(cx, cy, anchor="nw", image=photo)
-                except Exception:
-                    pass
-
-            self._cell_boxes.append((field_key, (x, y, x2, y2)))
-
-        if not self.current_card:
-            c.create_text((px0 + px1) // 2, (py0 + py1) // 2, text="Vlevo vytvořte/přidejte kartu.", font=("Segoe UI", 12), fill="#666666")
-
-    def _field_at_point(self, x: int, y: int) -> Optional[str]:
-        for field_key, (x0, y0, x1, y1) in self._cell_boxes:
-            if x0 <= x <= x1 and y0 <= y <= y1:
-                return field_key
-        return None
-
-    def on_preview_click(self, event: tk.Event) -> None:
-        if not self.current_card:
-            return
-        field_key = self._field_at_point(event.x, event.y)
-        if not field_key:
-            return
-        self._last_clicked_field = field_key
-        self._select_image_for_field(field_key)
-
-    def on_preview_right_click(self, event: tk.Event) -> None:
-        if not self.current_card:
-            return
-        field_key = self._field_at_point(event.x, event.y)
-        if not field_key:
-            return
-        self._last_clicked_field = field_key
+    def _commit(self) -> None:
         try:
-            self.cell_menu.tk_popup(event.x_root, event.y_root)
-        finally:
-            self.cell_menu.grab_release()
+            self.db.commit()
+            self.status_bar.showMessage("UloÅ¾eno.", 3000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Chyba", f"UloÅ¾enÃ­ selhalo: {exc}")
 
-    def _clear_last_cell(self) -> None:
-        if not self.current_card or not self._last_clicked_field:
+    def _open_image_for_field(self, field_key: str) -> None:
+        if not self.current_card:
             return
-        fk = self._last_clicked_field
-        if not messagebox.askyesno("Vymazat", f"Vymazat obrázek pro „{fk}“?"):
-            return
-        try:
-            self.db.clear_image(self.current_card.id, fk)
-            self.current_images = self.db.get_images_for_card(self.current_card.id)
-            self.render_preview()
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Vymazání selhalo: {human_exception(e)}")
-
-    def _select_image_for_field(self, field_key: str) -> None:
-        path = filedialog.askopenfilename(
-            title="Vyberte obrázek",
-            filetypes=[
-                ("Obrázky", "*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp"),
-                ("Vše", "*.*"),
-            ],
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Vyberte obrÃ¡zek",
+            "",
+            "ObrÃ¡zky (*.png *.jpg *.jpeg *.bmp *.gif *.tif *.tiff *.webp);;VÅ¡e (*.*)",
         )
         if not path:
             return
-
         try:
             pil = Image.open(path)
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Nelze otevřít obrázek: {human_exception(e)}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Chyba", f"NepodaÅilo se otevÅÃ­t obrÃ¡zek: {exc}")
             return
 
-        out_w, out_h = self.settings.output_size
-        png = edit_image_dialog(self.root, pil, (out_w, out_h))
+        layout_rect = self.preview.image_bounds.get(field_key)
+        ratio: Optional[Tuple[int, int]] = None
+        if layout_rect:
+            ratio = (int(layout_rect.width()), int(layout_rect.height()))
+
+        out_w, out_h = self.settings.output_size(ratio)
+        png = edit_image_dialog(self, pil, (out_w, out_h))
         if png is None:
             return
 
         try:
             self.db.set_image(self.current_card.id, field_key, png)
             self.current_images = self.db.get_images_for_card(self.current_card.id)
-            self.render_preview()
-            self.status.set(f"Uloženo: {self.current_card.name} / {field_key}")
-        except Exception as e:
-            messagebox.showerror("Chyba", f"Uložení obrázku selhalo: {human_exception(e)}")
+            self.preview.set_card(self.current_card.name, self.current_images)
+            self.status_bar.showMessage(f"UloÅ¾eno: {self.current_card.name} / {field_key}", 4000)
+        except Exception as exc:
+            QMessageBox.critical(self, "Chyba", f"UloÅ¾enÃ­ obrÃ¡zku selhalo: {exc}")
+
+    def _clear_image_for_field(self, field_key: str) -> None:
+        if not self.current_card:
+            return
+        resp = QMessageBox.question(
+            self,
+            "Vymazat",
+            f"Opravdu vymazat obrÃ¡zek pro â{field_key}â?",
+        )
+        if resp == QMessageBox.Yes:
+            try:
+                self.db.clear_image(self.current_card.id, field_key)
+                self.current_images = self.db.get_images_for_card(self.current_card.id)
+                self.preview.set_card(self.current_card.name, self.current_images)
+            except Exception as exc:
+                QMessageBox.critical(self, "Chyba", f"VymazÃ¡nÃ­ selhalo: {exc}")
 
 
 def main() -> None:
-    root = tk.Tk()
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    window.show()
     try:
-        ttk.Style().theme_use("clam")
+        sys.exit(app.exec())
     except Exception:
-        pass
-
-    try:
-        if sys.platform.startswith("win"):
-            root.tk.call("tk", "scaling", 1.2)
-    except Exception:
-        pass
-
-    try:
-        App(root)
-        root.mainloop()
-    except Exception as e:
-        try:
-            messagebox.showerror("Chyba", f"Aplikace spadla:\n{human_exception(e)}")
-        except Exception:
-            pass
         traceback.print_exc()
-        try:
-            root.destroy()
-        except Exception:
-            pass
+
+
+if __name__ == "__main__":
+    main()

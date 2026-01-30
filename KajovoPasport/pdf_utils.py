@@ -33,6 +33,25 @@ def _ensure_pdf_font() -> str:
     return "Helvetica"
 
 
+def _wrap_text_to_width(text: str, width: float, font_name: str, font_size: float) -> List[str]:
+    if not text:
+        return []
+    words = text.split()
+    if not words:
+        return []
+    lines: List[str] = []
+    current = words[0]
+    for word in words[1:]:
+        candidate = f"{current} {word}"
+        if pdfmetrics.stringWidth(candidate, font_name, font_size) <= width:
+            current = candidate
+        else:
+            lines.append(current)
+            current = word
+    lines.append(current)
+    return lines
+
+
 def generate_card_pdf(
     out_path: str,
     card_name: str,
@@ -53,27 +72,35 @@ def generate_card_pdf(
 
     # Title area
     title_font = 16
-    title_h = 18 * mm
     font_name = _ensure_pdf_font()
     c.setFont(font_name, title_font)
-    c.drawString(margin, page_h - margin - title_font * 1.2, card_name)
-
-    # Grid below title
-    grid_top = page_h - margin - title_h
+    line_height = title_font * 1.2
+    title_lines = _wrap_text_to_width((card_name or "").upper(), content_w, font_name, title_font)
+    if not title_lines:
+        title_lines = [""]
+    center_x = margin + content_w / 2
+    y = page_h - margin - 4
+    for line in title_lines:
+        c.drawCentredString(center_x, y, line)
+        y -= line_height
+    title_height = line_height * len(title_lines)
+    grid_top = page_h - margin - title_height - (4 * mm)
     grid_bottom = margin
+    if grid_top <= grid_bottom + mm:
+        grid_top = grid_bottom + mm + 2 * mm
     grid_h = grid_top - grid_bottom
     grid_w = content_w
 
     cols = 4
     rows = 4
-    gap = 2.0 * mm
+    gap = 1.0 * mm
 
     cell_w = (grid_w - gap * (cols - 1)) / cols
     cell_h = (grid_h - gap * (rows - 1)) / rows
 
     label_font = 8
-    label_h = 9 * mm  # room for multiword labels
-    img_pad = 1.5 * mm
+    label_h = 7 * mm
+    img_pad = 1.0 * mm
 
     c.setLineWidth(0.8)
 
